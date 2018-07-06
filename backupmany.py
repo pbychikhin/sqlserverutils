@@ -11,9 +11,10 @@ from zipfile import ZipFile
 from concurrent.futures import ThreadPoolExecutor
 
 
-def getLogger():
+def getLogger(dsuffix=None):
     """
     Prepares logging facility
+    :param dsuffix: a distinguishing suffix
     :return: logger object to be used in the rest of subs
     """
     log_formatter_stream = logging.Formatter(fmt="{asctime} {message}", style="{")
@@ -21,7 +22,13 @@ def getLogger():
     log_handler_stream = logging.StreamHandler()
     log_handler_stream.setLevel(logging.INFO)
     log_handler_stream.setFormatter(log_formatter_stream)
-    log_handler_file = logging.FileHandler(Path(sys.argv[0]).with_suffix(".log").as_posix(), mode="w")
+    if dsuffix is not None: dsuffix = dsuffix.strip()
+    if dsuffix is not None and len(dsuffix) > 0:
+        log_handler_file = logging.FileHandler(Path(sys.argv[0]).
+                                               with_name(Path(sys.argv[0]).stem + "_" + dsuffix).
+                                               with_suffix(".log").as_posix(), mode="w")
+    else:
+        log_handler_file = logging.FileHandler(Path(sys.argv[0]).with_suffix(".log").as_posix(), mode="w")
     log_handler_file.setLevel(logging.DEBUG)
     log_handler_file.setFormatter(log_formatter_file)
     log_logger = logging.getLogger(Path(sys.argv[0]).name)
@@ -288,8 +295,9 @@ if __name__ == "__main__":
     cmd.add_argument("-r", metavar="timestr", help="Retention time of old files, w(eeks)d(days)h(ours)m(inutes). "
                                                    "If given, the script performs clean up")
     cmd.add_argument("-m", help="Simulate file removal - just write a log record", action="store_true", default=False)
+    cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
     cmdargs = cmd.parse_args()
-    log = getLogger()
+    log = getLogger(cmdargs.l)
     if not Path(cmdargs.p).is_absolute():
         log.critical("The path to the backup directory is not absolute")
         exit(1)
