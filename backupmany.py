@@ -43,22 +43,50 @@ class DBConnect:
     The class keeps connection vars and returns a new connection on demand
     """
 
-    def __init__(self, server, prog_name):
+    def __init__(self, server, prog_name, log):
         """
         Stores vars
         :param server: SQL server name
         :param prog_name: the name of the program that connects to the SQL server
+        :param log: logger obj
         """
         self.server = server
         self.prog_name = prog_name
+        self.log = log
+        self.known_drivers = (
+            "SQL Server",
+            "SQL Native Client",
+            "SQL Server Native Client 10.0",
+            "SQL Server Native Client 11.0",
+            "ODBC Driver 11 for SQL Server",
+            "ODBC Driver 13 for SQL Server",
+            "ODBC Driver 13.1 for SQL Server",
+            "ODBC Driver 17 for SQL Server")
+        self.known_drivers = {x: y for x, y in zip(self.known_drivers, range(len(self.known_drivers)))}
+        self.get_driver()
+
+    def get_driver(self):
+        driver_score = -1
+        self.driver = None
+        self.log.debug("Searching for the best DB driver")
+        for d in pyodbc.drivers():
+            try:
+                if self.known_drivers[d] > driver_score:
+                    self.log.debug("Found better driver \"{}\"".format(d))
+                    self.driver = d
+                    driver_score = self.known_drivers[d]
+                else:
+                    self.log.debug("Driver \"{}\" is not the best one".format(d))
+            except KeyError:
+                self.log.debug("Driver \"{}\" is unknown".format(d))
 
     def getcon(self):
         try:
-            con = pyodbc.connect(driver="{ODBC Driver 17 for SQL Server}",
+            con = pyodbc.connect(driver=self.driver,
                                  server=self.server, trusted_connection="yes",
                                  app=self.prog_name, autocommit=True)
         except Exception:
-            log.exception("Connect to the DB server failed")
+            self.log.exception("Connect to the DB server failed")
             return None
         else:
             return con
@@ -75,6 +103,7 @@ class DBSet:
         :param dbc: DBConnect obj
         :param log: logger obj
         """
+        self.log = log
         con = dbc.getcon()
         self.dbset = set()
         if con is not None:
@@ -82,10 +111,10 @@ class DBSet:
                 with con.cursor() as cur:
                     cur.execute("SELECT name FROM sys.databases;")
                     for row in cur.fetchall():
-                        log.debug("Caching a DB name: {}".format(row[0].lower()))
+                        self.log.debug("Found database \"{}\"".format(row[0].lower()))
                         self.dbset.add(row[0].lower())
             except Exception:
-                log.exception("DB operation failed")
+                self.log.exception("DB operation failed")
             con.close()
 
     def exists(self, dbname):
@@ -123,8 +152,8 @@ def backupDB(dbc, name, names, path, prefix, log):
         if con is not None:
             bak_name = "_".join((prefix, name, datetime.today().strftime("%Y%m%d_%H%M%S"))) + ".bak"
             full_bak_name = Path(path).joinpath(bak_name).as_posix()
-            log.info("Backing up DB {}".format(name))
-            log.debug("Backing up DB {} to {}".format(name, full_bak_name))
+            log.info("Backing up DB \"{}\"".format(name))
+            log.debug("Backing up DB \"{}\" to \"{}\"".format(name, full_bak_name))
             try:
                 with con.cursor() as cur:
                     cur.execute("BACKUP DATABASE ? TO DISK = ?;", (name, full_bak_name.replace("/", "\\")))
@@ -132,17 +161,17 @@ def backupDB(dbc, name, names, path, prefix, log):
                         pass
             except Exception:
                 log.exception("Backup operation failed")
-                log.info("Failed backing up DB {} failed".format(name))
+                log.info("Failed backing up DB \"{}\"".format(name))
                 return None
             else:
-                log.info("Successfully backed up DB {}".format(name))
+                log.info("Successfully backed up DB \"{}\"".format(name))
                 con.close()
                 return bak_name
         else:
             con.close()
             return None
     else:
-        log.error("DB {} not found".format(name))
+        log.error("DB \"{}\" not found".format(name))
         return None
 
 
@@ -160,29 +189,29 @@ def compressBak(name, path, log):
     full_zip_tmp_name = Path(path).joinpath(Path(name).stem + tmp_ext).as_posix()
     zip_name = Path(name).stem + zip_ext
     full_zip_name = Path(path).joinpath(zip_name).as_posix()
-    log.info("Compressing bak-file {}".format(name))
-    log.debug("Making ZIP-compressed temp file {} from {}".format(full_zip_tmp_name, full_bak_name))
+    log.info("Compressing bak-file \"{}\"".format(name))
+    log.debug("Making ZIP-compressed temp file \"{}\" from \"{}\"".format(full_zip_tmp_name, full_bak_name))
     try:
         with ZipFile(full_zip_tmp_name, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(full_bak_name, name)
-        log.debug("Renaming temp file {} to {}".format(full_zip_tmp_name, full_zip_name))
+        log.debug("Renaming temp file \"{}\" to \"{}\"".format(full_zip_tmp_name, full_zip_name))
         Path(full_zip_tmp_name).rename(full_zip_name)
-        log.debug("Removing original bak-file {}".format(full_bak_name))
+        log.debug("Removing original bak-file \"{}\"".format(full_bak_name))
         Path(full_bak_name).unlink()
     except Exception:
         log.exception("Compress operation failed")
-        log.info("Failed compressing bak-file {}".format(name))
+        log.info("Failed compressing bak-file \"{}\"".format(name))
         return None
     else:
-        log.info("Successfully compressed bak-file {} to zip-file {}".format(name, zip_name))
+        log.info("Successfully compressed bak-file \"{}\" to zip-file \"{}\"".format(name, zip_name))
         return zip_name
     finally:
         if Path(full_zip_tmp_name).exists():
-            log.debug("Removing temp file {}".format(full_zip_tmp_name))
+            log.debug("Removing temp file \"{}\"".format(full_zip_tmp_name))
             try:
                 Path(full_zip_tmp_name).unlink()
             except Exception:
-                log.exception("Could not remove {}".format(full_zip_tmp_name))
+                log.exception("Could not remove \"{}\"".format(full_zip_tmp_name))
 
 
 def backupAndCompress(dbc, name, names, path, prefix, log):
@@ -219,18 +248,18 @@ def removeOld(path, name, prefix, rttime, simulate, log):
         name_parts = dict(zip(("prefix", "name", "timestamp", "suffix"),
                               re.search("({})_(\S*)_(\d{{8}}_\d{{6}})\.(\S+)".format(prefix), name).groups()))
     except Exception:
-        log.exception("Could not find valid name parts in {}".format(name))
+        log.exception("Could not find valid name parts in \"{}\"".format(name))
         return 0, 0
     try:
         name_time = datetime.strptime(name_parts["timestamp"], "%Y%m%d_%H%M%S")
     except Exception:
-        log.exception("Could not convert {} to time".format(name_parts["timestamp"]))
+        log.exception("Could not convert \"{}\" to time".format(name_parts["timestamp"]))
         return 0, 0
-    log.debug("Performing clean up for {}".format(item_glob_pattern.format(**name_parts)))
+    log.debug("Performing clean up for \"{}\"".format(item_glob_pattern.format(**name_parts)))
     count = {"total": 0, "removed": 0}
     for item in Path(path).glob(item_glob_pattern.format(**name_parts)):
         if item.name == name:
-            log.debug("Skipping this session's file {}".format(item.as_posix()))
+            log.debug("Skipping this session's file \"{}\"".format(item.as_posix()))
             continue
         count["total"] += 1
         try:
@@ -239,21 +268,21 @@ def removeOld(path, name, prefix, rttime, simulate, log):
                                         item.as_posix()).groups()))
             item_time = datetime.strptime(item_parts["timestamp"], "%Y%m%d_%H%M%S")
         except Exception:
-            log.debug("Skipping irrelevant file {}".format(item.as_posix()))
+            log.debug("Skipping irrelevant file \"{}\"".format(item.as_posix()))
             continue
         if name_time - item_time > rttime:
-            log.debug("Removing {}".format(item.as_posix()))
+            log.debug("Removing \"{}\"".format(item.as_posix()))
             try:
                 if not simulate:
                     item.unlink()
                 else:
-                    log.debug("Simulating removal of old file {}".format(item.as_posix()))
+                    log.debug("Simulating removal of old file \"{}\"".format(item.as_posix()))
             except Exception:
-                log.exception("Could not remove {}".format(item.as_posix()))
+                log.exception("Could not remove \"{}\"".format(item.as_posix()))
             else:
                 count["removed"] += 1
         else:
-            log.debug("Skipping old file {}, time delta is {} - too recent".format(item.as_posix(),
+            log.debug("Skipping old file \"{}\", time delta is {} - too recent".format(item.as_posix(),
                                                                                    name_time - item_time))
     return count
 
@@ -271,7 +300,7 @@ def getTimeDelta(timestr, log):
                            .groups(default="0t"))
         rv = timedelta(**dict(zip(("weeks", "days", "hours", "minutes"), time_parts)))
     except Exception:
-        log.exception("Could not extract a time delta from {}".format(timestr))
+        log.exception("Could not extract a time delta from \"{}\"".format(timestr))
     return rv
 
 
@@ -310,7 +339,7 @@ if __name__ == "__main__":
         else:
             log.debug("Retention time is set to {}".format(cmdargs.r))
     cmdargs.d = re.split("\s*,\s*", cmdargs.d.strip())
-    dbc = DBConnect(cmdargs.s, prog_name)
+    dbc = DBConnect(cmdargs.s, prog_name, log)
     names = DBSet(dbc, log)
     log.debug("Backing up databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
     with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
