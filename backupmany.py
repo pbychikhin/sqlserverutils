@@ -68,7 +68,6 @@ class DBConnect:
     def get_driver(self):
         driver_score = -1
         self.driver = None
-        self.log.debug("Searching for the best DB driver")
         for d in pyodbc.drivers():
             try:
                 if self.known_drivers[d] > driver_score:
