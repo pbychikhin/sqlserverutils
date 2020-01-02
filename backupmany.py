@@ -151,11 +151,17 @@ def backupDB(dbc, name, names, path, prefix, log):
         if con is not None:
             bak_name = "_".join((prefix, name, datetime.today().strftime("%Y%m%d_%H%M%S"))) + ".bak"
             full_bak_name = Path(path).joinpath(bak_name).as_posix()
-            log.info("Backing up DB \"{}\"".format(name))
-            log.debug("Backing up DB \"{}\" to \"{}\"".format(name, full_bak_name))
+            log.info("Backing up DB \"{}\" to \"{}\"".format(name, full_bak_name))
+            is_compressed = False
             try:
                 with con.cursor() as cur:
-                    cur.execute("BACKUP DATABASE ? TO DISK = ?;", (name, full_bak_name.replace("/", "\\")))
+                    try:
+                        cur.execute("BACKUP DATABASE ? TO DISK = ? WITH COPY_ONLY, COMPRESSION;", (name, full_bak_name.replace("/", "\\")))
+                    except pyodbc.ProgrammingError:
+                        log.debug("Could not use compression. Will try without one")
+                        cur.execute("BACKUP DATABASE ? TO DISK = ? WITH COPY_ONLY;", (name, full_bak_name.replace("/", "\\")))
+                    else:
+                        is_compressed = True
                     while cur.nextset():
                         pass
             except Exception:
@@ -165,7 +171,7 @@ def backupDB(dbc, name, names, path, prefix, log):
             else:
                 log.info("Successfully backed up DB \"{}\"".format(name))
                 con.close()
-                return bak_name
+                return bak_name, is_compressed
         else:
             con.close()
             return None
@@ -224,10 +230,13 @@ def backupAndCompress(dbc, name, names, path, prefix, log):
     :param log: logger obj
     :return: zip-file name or None
     """
-    bak_name = backupDB(dbc, name, names, path, prefix, log)
+    bak_info = backupDB(dbc, name, names, path, prefix, log)
     zip_name = None
-    if bak_name is not None:
-        zip_name = compressBak(bak_name, path, log)
+    if bak_info is not None:
+        if bak_info[1]:
+            zip_name = bak_info[0]
+        else:
+            zip_name = compressBak(bak_info[0], path, log)
     return zip_name
 
 
