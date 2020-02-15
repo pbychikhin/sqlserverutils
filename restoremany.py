@@ -41,6 +41,43 @@ def ybstr(str):
     return _YB + str + _SR
 
 
+class ServerProperties:
+    """
+    DB server properties
+    """
+    def __init__(self, dbc, log):
+        """
+        Init
+        :param dbc: DBConnect obj
+        :param log: logger obj
+        """
+        self.dbc = dbc
+        self.log = log
+        self.properties_to_fetch = {"InstanceDefaultDataPath": True, "InstanceDefaultLogPath": True}
+        self.properties = dict()
+        self.fetch_properties()
+
+    def fetch_properties(self):
+        con = self.dbc.getcon()
+        if con is not None:
+            log.debug("Fetching server properties")
+            try:
+                with con.cursor() as cur:
+                    for propname, propcritical in self.properties_to_fetch.items():
+                        cur.execute("SELECT CAST(SERVERPROPERTY(?) AS VARCHAR(MAX));", (propname,))
+                        property = cur.fetchone()
+                        if property[0]:
+                            self.properties[propname] = property[0]
+                        elif propcritical:
+                            raise RuntimeError("Critical server property {} not found".format(propname))
+            except Exception:
+                log.exception("Failed fetching server properties")
+                raise
+
+    def __getattr__(self, item):
+        return self.properties.get(item)
+
+
 class BackupFile:
     """
     Backup file definition and manipulation
@@ -65,7 +102,7 @@ class BackupFile:
         if con is not None:
             try:
                 with con.cursor() as cur:
-                    cur.execute("RESTORE HEADERONLY FROM DISK = ?;", (self.name))
+                    cur.execute("RESTORE HEADERONLY FROM DISK = ?;", (self.name,))
                     backupsets = []
                     backupsets_reduced = {}
                     header_columns = tuple(x[0] for x in cur.description)
@@ -176,11 +213,15 @@ class PathMap:
     def compare_path(p1, p2):
         return os.path.normcase(os.path.normpath(p1)) == os.path.normcase(os.path.normpath(p2))
 
-    def get_path(self, path):
-        return self.pathmap.get(os.path.normcase(os.path.normpath(path)), path)
+    def get_path(self, path, cat="default"):
+        if cat not in self.pathmap:
+            self.pathmap[cat] = dict()
+        return self.pathmap[cat].get(os.path.normcase(os.path.normpath(path)), path)
 
-    def set_path(self, path, pathmap):
-        self.pathmap[os.path.normcase(os.path.normpath(path))] = pathmap
+    def set_path(self, path, pathmap, cat="default"):
+        if cat not in self.pathmap:
+            self.pathmap[cat] = dict()
+        self.pathmap[cat][os.path.normcase(os.path.normpath(path))] = pathmap
 
     def save_state(self):
         self.pathmap_saved = deepcopy(self.pathmap)
@@ -189,20 +230,24 @@ class PathMap:
         self.pathmap = deepcopy(self.pathmap_saved)
 
 
-def restoreDB(dbc, backupfile, log, interactive=False, user=None, replace=False, pm=None):
+def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, replace=False, pm=None, sp=None):
     """
     Restores all DBs from file
     :param dbc: DBConnect obj
     :param backupfile: absolute! backup file name
     :param log: logger obj
+    :param defaultpath: fromdb or fromfile, or the absolute path to a directory
     :param interactive: interactively ask for DB files relocation path
     :param user: user to fix permissions for
     :param replace: force replacing existing DB
     :param pm: shared PathMap object. Allows saving state between restoreDB invocations
+    :param sp: shared ServerProperties object
     :return: a dict - total and restored DBs
     """
     if not os.path.isabs(backupfile):
         raise RuntimeError("Backup file name is not absolute")
+    if defaultpath not in ("fromdb", "fromfile") and not os.path.isabs(defaultpath):
+        raise RuntimeError("Restore path is not absolute")
     if not pm:
         pm = PathMap()
     count = {"total": 0, "restored": 0}
@@ -216,16 +261,32 @@ def restoreDB(dbc, backupfile, log, interactive=False, user=None, replace=False,
             if interactive:
                 pm.save_state()
             for file in backupset.get_files():
+                if defaultpath == "fromdb":
+                    log.debug("Getting default file path for {} from DB".format(file["LogicalName"]))
+                    physfile = os.path.basename(file["PhysicalName"])
+                    if file["Type"] == "L":
+                        physfile = os.path.join(sp.InstanceDefaultLogPath, physfile)
+                    else:
+                        physfile = os.path.join(sp.InstanceDefaultDataPath, physfile)
+                elif defaultpath == "fromfile":
+                    log.debug("Getting default file path for {} from backup".format(file["LogicalName"]))
+                    physfile = file["PhysicalName"]
+                else:
+                    log.debug("Default file path for {} is defined by user".format(file["LogicalName"]))
+                    physfile = os.path.join(defaultpath, os.path.basename(file["PhysicalName"]))
                 if interactive:
-                    fhead, ftail = os.path.split(file["PhysicalName"])
-                    relocatedfile = os.path.join(pm.get_path(fhead), ftail)
-                    newfile = winput("[restore {} as {}]: ".format(ybstr(file["LogicalName"]), ybstr(relocatedfile)))
+                    pm_cat = "log" if file["Type"] == "L" else "data"
+                    fhead, ftail = os.path.split(physfile)
+                    relocatedfile = os.path.join(pm.get_path(fhead, pm_cat), ftail)
+                    newfile = winput("[restore {} file {} as {}]: ".format("log" if file["Type"] == "L" else "data",
+                                                                           ybstr(file["LogicalName"]),
+                                                                           ybstr(relocatedfile)))
                     if len(newfile) == 0 or newfile.isspace():
                         newfile = relocatedfile
-                    pm.set_path(fhead, os.path.dirname(newfile))
+                    pm.set_path(fhead, os.path.dirname(newfile), pm_cat)
                     files[file["LogicalName"]] = newfile
                 else:
-                    files[file["LogicalName"]] = file["PhysicalName"]
+                    files[file["LogicalName"]] = physfile
             if interactive:
                 inprompt = ">>>\n"
                 for k, v in files.items():
@@ -291,7 +352,8 @@ def restoreDB(dbc, backupfile, log, interactive=False, user=None, replace=False,
 if __name__ == "__main__":
     defaults = {
         "server": r"localhost\MSSQLSERVER",
-        "workers": (1, 4)  # Default and allowed maximum
+        "workers": (1, 4),  # Default and allowed maximum
+        "default_data_log": "fromdb"
     }
     prog_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
     cmd = argparse.ArgumentParser(description="Restores DB backups (files with *.bak ext) from the dir specified or "
@@ -301,6 +363,8 @@ if __name__ == "__main__":
     cmdgroup1 = cmd.add_mutually_exclusive_group(required=True)
     cmdgroup1.add_argument("-d", metavar="path", help="Absolute path to the directory with backups")
     cmdgroup1.add_argument("-f", metavar="path", help="Absolute path to the backup file")
+    cmd.add_argument("-p", metavar="<fromdb | fromfile | abs_path>", default=defaults["default_data_log"],
+                     help="Default data/log directory path ({})".format(defaults["default_data_log"]))
     cmd.add_argument("-b", help="Batch mode ({})".format(False), action="store_true", default=False)
     cmd.add_argument("-w", metavar="num", help="Max. workers running in parallel for batch mode({})".
                      format(defaults["workers"]), default=defaults["workers"][0], type=int)
@@ -322,15 +386,18 @@ if __name__ == "__main__":
     log.debug("Restoring databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
     interactive = False if cmdargs.b else True
     pm = PathMap()
+    sp = ServerProperties(dbc, log)
     with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
         counts = list(count for count in executor.map(restoreDB,
                                                       (dbc,) * len(bakfiles),
                                                       bakfiles,
                                                       (log,) * len(bakfiles),
+                                                      (cmdargs.p,) * len(bakfiles),
                                                       (interactive,) * len(bakfiles),
                                                       (cmdargs.u, ) * len(bakfiles),
                                                       (cmdargs.r, ) * len(bakfiles),
-                                                      (pm, ) * len(bakfiles)))
+                                                      (pm, ) * len(bakfiles),
+                                                      (sp, ) * len(bakfiles)))
     total = sum(x["total"] for x in counts)
     restored = sum(x["restored"] for x in counts)
     if restored < total:
