@@ -10,8 +10,9 @@ from datetime import datetime, timedelta
 from zipfile import ZipFile
 from concurrent.futures import ThreadPoolExecutor
 
+_VERSION="0.2.0"
 
-def getLogger(dsuffix=None):
+def getLogger(dsuffix=None, tofile=False):
     """
     Prepares logging facility
     :param dsuffix: a distinguishing suffix
@@ -22,18 +23,19 @@ def getLogger(dsuffix=None):
     log_handler_stream = logging.StreamHandler()
     log_handler_stream.setLevel(logging.INFO)
     log_handler_stream.setFormatter(log_formatter_stream)
-    if dsuffix is not None: dsuffix = dsuffix.strip()
-    if dsuffix is not None and len(dsuffix) > 0:
-        log_handler_file = logging.FileHandler(Path(sys.argv[0]).
-                                               with_name(Path(sys.argv[0]).stem + "_" + dsuffix).
-                                               with_suffix(".log").as_posix(), mode="w")
-    else:
-        log_handler_file = logging.FileHandler(Path(sys.argv[0]).with_suffix(".log").as_posix(), mode="w")
-    log_handler_file.setLevel(logging.DEBUG)
-    log_handler_file.setFormatter(log_formatter_file)
     log_logger = logging.getLogger(Path(sys.argv[0]).name)
     log_logger.addHandler(log_handler_stream)
-    log_logger.addHandler(log_handler_file)
+    if tofile:
+        if dsuffix is not None: dsuffix = dsuffix.strip()
+        if dsuffix is not None and len(dsuffix) > 0:
+            log_handler_file = logging.FileHandler(Path(sys.argv[0]).
+                                                   with_name(Path(sys.argv[0]).stem + "_" + dsuffix).
+                                                   with_suffix(".log").as_posix(), mode="w")
+        else:
+            log_handler_file = logging.FileHandler(Path(sys.argv[0]).with_suffix(".log").as_posix(), mode="w")
+        log_handler_file.setLevel(logging.DEBUG)
+        log_handler_file.setFormatter(log_formatter_file)
+        log_logger.addHandler(log_handler_file)
     log_logger.setLevel(logging.DEBUG)
     return log_logger
 
@@ -333,8 +335,10 @@ if __name__ == "__main__":
                                                    "If given, the script performs clean up")
     cmd.add_argument("-m", help="Simulate file removal - just write a log record", action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
+    cmd.add_argument("--logtofile", help="Enable log to file ({})".format(False), action="store_true", default=False)
+    cmd.add_argument("-v", action="version", version=_VERSION)
     cmdargs = cmd.parse_args()
-    log = getLogger(cmdargs.l)
+    log = getLogger(cmdargs.l, cmdargs.logtofile)
     if not Path(cmdargs.p).is_absolute():
         log.critical("The path to the backup directory is not absolute")
         exit(1)

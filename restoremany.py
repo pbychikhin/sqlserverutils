@@ -8,6 +8,9 @@ from copy import deepcopy
 from colorama import init as color_init, Fore, Style
 from backupmany import getLogger, DBConnect
 from concurrent.futures import ThreadPoolExecutor
+from time import sleep
+
+_VERSION="0.2.0"
 
 color_init()
 _YB = Fore.YELLOW + Style.BRIGHT    # Yellow Bright
@@ -102,7 +105,7 @@ class BackupFile:
         if con is not None:
             try:
                 with con.cursor() as cur:
-                    cur.execute("RESTORE HEADERONLY FROM DISK = ?;", (self.name,))
+                    cur.execute("RESTORE HEADERONLY FROM DISK = ?;", (self.name))
                     backupsets = []
                     backupsets_reduced = {}
                     header_columns = tuple(x[0] for x in cur.description)
@@ -230,6 +233,9 @@ class PathMap:
         self.pathmap = deepcopy(self.pathmap_saved)
 
 
+stop_restore = False
+nointerrupt = False
+
 def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, replace=False, pm=None, sp=None):
     """
     Restores all DBs from file
@@ -244,13 +250,21 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
     :param sp: shared ServerProperties object
     :return: a dict - total and restored DBs
     """
+    count = {"total": 0, "restored": 0}
+    if not nointerrupt:
+        log.info("Preparing restore from \"{}\"".format(backupfile))
+        sleep(1)
+    if stop_restore:
+        log.warn("User has requested to stop")
+        return count
     if not os.path.isabs(backupfile):
         raise RuntimeError("Backup file name is not absolute")
     if defaultpath not in ("fromdb", "fromfile") and not os.path.isabs(defaultpath):
         raise RuntimeError("Restore path is not absolute")
     if not pm:
         pm = PathMap()
-    count = {"total": 0, "restored": 0}
+    if not sp:
+        sp = ServerProperties(dbc, log)
     for item in BackupFile(backupfile, dbc, log).get_backupsets():
         backupset = BackupSet(backupfile, item, dbc, log)
         log.info("Restoring DB \"{}\"".format(backupset.get_dbname()))
@@ -371,8 +385,13 @@ if __name__ == "__main__":
     cmd.add_argument("-u", metavar="name", help="Fix user permissions after restore for the specified user")
     cmd.add_argument("-r", help="Replace existing DB ({})".format(False), action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
+    cmd.add_argument("--nointerrupt",
+                     help="Nointerrupt mode (Ctrl+C is not supposed to be pressed) ({})".format(False),
+                     action="store_true", default=False)
+    cmd.add_argument("--logtofile", help="Enable log to file ({})".format(False), action="store_true", default=False)
+    cmd.add_argument("-v", action="version", version=_VERSION)
     cmdargs = cmd.parse_args()
-    log = getLogger(cmdargs.l)
+    log = getLogger(cmdargs.l, cmdargs.logtofile)
     for path in (cmdargs.d, cmdargs.f):
         if path is not None and not os.path.isabs(path):
             log.critical("The path to the backup file or directory is not absolute")
@@ -387,17 +406,23 @@ if __name__ == "__main__":
     interactive = False if cmdargs.b else True
     pm = PathMap()
     sp = ServerProperties(dbc, log)
+    if cmdargs.nointerrupt:
+        nointerrupt = True
     with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
-        counts = list(count for count in executor.map(restoreDB,
-                                                      (dbc,) * len(bakfiles),
-                                                      bakfiles,
-                                                      (log,) * len(bakfiles),
-                                                      (cmdargs.p,) * len(bakfiles),
-                                                      (interactive,) * len(bakfiles),
-                                                      (cmdargs.u, ) * len(bakfiles),
-                                                      (cmdargs.r, ) * len(bakfiles),
-                                                      (pm, ) * len(bakfiles),
-                                                      (sp, ) * len(bakfiles)))
+        try:
+            counts = list(count for count in executor.map(restoreDB,
+                                                          (dbc,) * len(bakfiles),
+                                                          bakfiles,
+                                                          (log,) * len(bakfiles),
+                                                          (cmdargs.p,) * len(bakfiles),
+                                                          (interactive,) * len(bakfiles),
+                                                          (cmdargs.u,) * len(bakfiles),
+                                                          (cmdargs.r,) * len(bakfiles),
+                                                          (pm,) * len(bakfiles),
+                                                          (sp,) * len(bakfiles)))
+        except KeyboardInterrupt:
+            stop_restore = True
+            exit()
     total = sum(x["total"] for x in counts)
     restored = sum(x["restored"] for x in counts)
     if restored < total:
