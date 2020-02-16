@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from zipfile import ZipFile
 from concurrent.futures import ThreadPoolExecutor
 
-_VERSION="0.2.0"
+_VERSION = "0.2.1"
 
 def getLogger(dsuffix=None, tofile=False):
     """
@@ -316,7 +316,7 @@ def getTimeDelta(timestr, log):
 
 if __name__ == "__main__":
     defaults = {
-        "server": r"localhost\MSSQLSERVER",
+        "server": r"localhost",
         "prefix": "auto_backup_db",
         "workers": (1, 4)  # Default and allowed maximum
     }
@@ -352,22 +352,26 @@ if __name__ == "__main__":
             log.debug("Retention time is set to {}".format(cmdargs.r))
     cmdargs.d = re.split("\s*,\s*", cmdargs.d.strip())
     dbc = DBConnect(cmdargs.s, prog_name, log)
-    names = DBSet(dbc, log)
-    log.debug("Backing up databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
-    with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
-        successes = list(name for name in executor.map(backupAndCompress,
-                                                       (dbc,) * len(cmdargs.d),
-                                                       (dbname for dbname in cmdargs.d),
-                                                       (names,) * len(cmdargs.d),
-                                                       (cmdargs.p,) * len(cmdargs.d),
-                                                       (cmdargs.x,) * len(cmdargs.d),
-                                                       (log,) * len(cmdargs.d)) if name is not None)
-    if len(cmdargs.d) == len(successes):
-        chosen_log = log.info
+    log.info("Checking DB connection")
+    if dbc.getcon() is None:
+        log.critical("Could not connect to the DB server \"{}\"".format(cmdargs.s))
     else:
-        chosen_log = log.warning
-    chosen_log("Back up complete. {} successfull out of {}".format(len(successes), len(cmdargs.d)))
-    if cmdargs.r is not None:
-        log.info("Cleaning up from old files")
-        for item in successes:
-            removeOld(cmdargs.p, item, cmdargs.x, cmdargs.r, cmdargs.m, log)
+        names = DBSet(dbc, log)
+        log.debug("Backing up databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
+        with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
+            successes = list(name for name in executor.map(backupAndCompress,
+                                                           (dbc,) * len(cmdargs.d),
+                                                           (dbname for dbname in cmdargs.d),
+                                                           (names,) * len(cmdargs.d),
+                                                           (cmdargs.p,) * len(cmdargs.d),
+                                                           (cmdargs.x,) * len(cmdargs.d),
+                                                           (log,) * len(cmdargs.d)) if name is not None)
+        if len(cmdargs.d) == len(successes):
+            chosen_log = log.info
+        else:
+            chosen_log = log.warning
+        chosen_log("Back up complete. {} successfull out of {}".format(len(successes), len(cmdargs.d)))
+        if cmdargs.r is not None:
+            log.info("Cleaning up from old files")
+            for item in successes:
+                removeOld(cmdargs.p, item, cmdargs.x, cmdargs.r, cmdargs.m, log)

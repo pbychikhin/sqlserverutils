@@ -10,7 +10,7 @@ from backupmany import getLogger, DBConnect
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 
-_VERSION="0.2.0"
+_VERSION = "0.2.1"
 
 color_init()
 _YB = Fore.YELLOW + Style.BRIGHT    # Yellow Bright
@@ -76,6 +76,7 @@ class ServerProperties:
             except Exception:
                 log.exception("Failed fetching server properties")
                 raise
+            con.close()
 
     def __getattr__(self, item):
         return self.properties.get(item)
@@ -129,6 +130,7 @@ class BackupFile:
             else:
                 self.backupsets = tuple(backupsets)
                 self.backupsets_reduced = tuple(backupsets_reduced.values())
+            con.close()
 
     def get_backupsets(self):
         """
@@ -180,6 +182,7 @@ class BackupSet:
                 self.log.exception("Fetching file list failed")
             else:
                 self.setfiles = tuple(files)
+            con.close()
 
     def get_files(self):
         """
@@ -253,6 +256,7 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
     count = {"total": 0, "restored": 0}
     if not nointerrupt:
         log.info("Preparing restore from \"{}\"".format(backupfile))
+        log.debug("Waitining for awhile so CTRL+C if pressed could be propagated")
         sleep(1)
     if stop_restore:
         log.warn("User has requested to stop")
@@ -360,12 +364,13 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
             else:
                 log.info("Successfully restored DB \"{}\"".format(backupset.get_dbname()))
                 count["restored"] += 1
+            con.close()
     return count
 
 
 if __name__ == "__main__":
     defaults = {
-        "server": r"localhost\MSSQLSERVER",
+        "server": r"localhost",
         "workers": (1, 4),  # Default and allowed maximum
         "default_data_log": "fromdb"
     }
@@ -401,32 +406,36 @@ if __name__ == "__main__":
     else:
         bakfiles = (cmdargs.f,)
     dbc = DBConnect(cmdargs.s, prog_name, log)
-    cmdargs.w = cmdargs.w if cmdargs.b else 1
-    log.debug("Restoring databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
-    interactive = False if cmdargs.b else True
-    pm = PathMap()
-    sp = ServerProperties(dbc, log)
-    if cmdargs.nointerrupt:
-        nointerrupt = True
-    with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
-        try:
-            counts = list(count for count in executor.map(restoreDB,
-                                                          (dbc,) * len(bakfiles),
-                                                          bakfiles,
-                                                          (log,) * len(bakfiles),
-                                                          (cmdargs.p,) * len(bakfiles),
-                                                          (interactive,) * len(bakfiles),
-                                                          (cmdargs.u,) * len(bakfiles),
-                                                          (cmdargs.r,) * len(bakfiles),
-                                                          (pm,) * len(bakfiles),
-                                                          (sp,) * len(bakfiles)))
-        except KeyboardInterrupt:
-            stop_restore = True
-            exit()
-    total = sum(x["total"] for x in counts)
-    restored = sum(x["restored"] for x in counts)
-    if restored < total:
-        chosen_log = log.warning
+    log.info("Checking DB connection")
+    if dbc.getcon() is None:
+        log.critical("Could not connect to the DB server \"{}\"".format(cmdargs.s))
     else:
-        chosen_log = log.info
-    chosen_log("Restore complete. {}/{} (successful/total)".format(restored, total))
+        cmdargs.w = cmdargs.w if cmdargs.b else 1
+        log.debug("Restoring databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
+        interactive = False if cmdargs.b else True
+        pm = PathMap()
+        sp = ServerProperties(dbc, log)
+        if cmdargs.nointerrupt:
+            nointerrupt = True
+        with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
+            try:
+                counts = list(count for count in executor.map(restoreDB,
+                                                              (dbc,) * len(bakfiles),
+                                                              bakfiles,
+                                                              (log,) * len(bakfiles),
+                                                              (cmdargs.p,) * len(bakfiles),
+                                                              (interactive,) * len(bakfiles),
+                                                              (cmdargs.u,) * len(bakfiles),
+                                                              (cmdargs.r,) * len(bakfiles),
+                                                              (pm,) * len(bakfiles),
+                                                              (sp,) * len(bakfiles)))
+            except KeyboardInterrupt:
+                stop_restore = True
+                exit()
+        total = sum(x["total"] for x in counts)
+        restored = sum(x["restored"] for x in counts)
+        if restored < total:
+            chosen_log = log.warning
+        else:
+            chosen_log = log.info
+        chosen_log("Restore complete. {}/{} (successful/total)".format(restored, total))
