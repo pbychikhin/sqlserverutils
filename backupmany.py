@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 from zipfile import ZipFile
 from concurrent.futures import ThreadPoolExecutor
 
-_VERSION = "0.2.1"
+_VERSION = "0.2.2"
 
-def getLogger(dsuffix=None, tofile=False):
+def getLogger(dsuffix=None, tofile=False, tostdout=False):
     """
     Prepares logging facility
     :param dsuffix: a distinguishing suffix
@@ -20,7 +20,10 @@ def getLogger(dsuffix=None, tofile=False):
     """
     log_formatter_stream = logging.Formatter(fmt="{asctime} {message}", style="{")
     log_formatter_file = logging.Formatter(fmt="{asctime} [{threadName}] [{levelname}] {message}", style="{")
-    log_handler_stream = logging.StreamHandler()
+    if tostdout:
+        log_handler_stream = logging.StreamHandler(sys.stdout)
+    else:
+        log_handler_stream = logging.StreamHandler()
     log_handler_stream.setLevel(logging.INFO)
     log_handler_stream.setFormatter(log_formatter_stream)
     log_logger = logging.getLogger(Path(sys.argv[0]).name)
@@ -336,9 +339,11 @@ if __name__ == "__main__":
     cmd.add_argument("-m", help="Simulate file removal - just write a log record", action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
     cmd.add_argument("--logtofile", help="Enable log to file ({})".format(False), action="store_true", default=False)
+    cmd.add_argument("--logtostdout", help="Log to stdout instead of stderr ({})".format(False),
+                     action="store_true", default=False)
     cmd.add_argument("-v", action="version", version=_VERSION)
     cmdargs = cmd.parse_args()
-    log = getLogger(cmdargs.l, cmdargs.logtofile)
+    log = getLogger(cmdargs.l, cmdargs.logtofile, cmdargs.logtostdout)
     if not Path(cmdargs.p).is_absolute():
         log.critical("The path to the backup directory is not absolute")
         exit(1)
@@ -355,6 +360,7 @@ if __name__ == "__main__":
     log.info("Checking DB connection")
     if dbc.getcon() is None:
         log.critical("Could not connect to the DB server \"{}\"".format(cmdargs.s))
+        exit(1)
     else:
         names = DBSet(dbc, log)
         log.debug("Backing up databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
@@ -366,12 +372,15 @@ if __name__ == "__main__":
                                                            (cmdargs.p,) * len(cmdargs.d),
                                                            (cmdargs.x,) * len(cmdargs.d),
                                                            (log,) * len(cmdargs.d)) if name is not None)
+        exit_status = 0
         if len(cmdargs.d) == len(successes):
             chosen_log = log.info
         else:
             chosen_log = log.warning
+            exit_status = 1
         chosen_log("Back up complete. {} successfull out of {}".format(len(successes), len(cmdargs.d)))
         if cmdargs.r is not None:
             log.info("Cleaning up from old files")
             for item in successes:
                 removeOld(cmdargs.p, item, cmdargs.x, cmdargs.r, cmdargs.m, log)
+        exit(exit_status)

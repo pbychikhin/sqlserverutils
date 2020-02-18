@@ -10,7 +10,7 @@ from backupmany import getLogger, DBConnect
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 
-_VERSION = "0.2.1"
+_VERSION = "0.2.2"
 
 color_init()
 _YB = Fore.YELLOW + Style.BRIGHT    # Yellow Bright
@@ -394,9 +394,11 @@ if __name__ == "__main__":
                      help="Nointerrupt mode (Ctrl+C is not supposed to be pressed) ({})".format(False),
                      action="store_true", default=False)
     cmd.add_argument("--logtofile", help="Enable log to file ({})".format(False), action="store_true", default=False)
+    cmd.add_argument("--logtostdout", help="Log to stdout instead of stderr ({})".format(False),
+                     action="store_true", default=False)
     cmd.add_argument("-v", action="version", version=_VERSION)
     cmdargs = cmd.parse_args()
-    log = getLogger(cmdargs.l, cmdargs.logtofile)
+    log = getLogger(cmdargs.l, cmdargs.logtofile, cmdargs.logtostdout)
     for path in (cmdargs.d, cmdargs.f):
         if path is not None and not os.path.isabs(path):
             log.critical("The path to the backup file or directory is not absolute")
@@ -409,6 +411,7 @@ if __name__ == "__main__":
     log.info("Checking DB connection")
     if dbc.getcon() is None:
         log.critical("Could not connect to the DB server \"{}\"".format(cmdargs.s))
+        exit(1)
     else:
         cmdargs.w = cmdargs.w if cmdargs.b else 1
         log.debug("Restoring databases using no more than {} worker(s)".format(min(cmdargs.w, defaults["workers"][1])))
@@ -431,11 +434,17 @@ if __name__ == "__main__":
                                                               (sp,) * len(bakfiles)))
             except KeyboardInterrupt:
                 stop_restore = True
-                exit()
+                exit(1)
         total = sum(x["total"] for x in counts)
         restored = sum(x["restored"] for x in counts)
+        exit_status = 0
         if restored < total:
             chosen_log = log.warning
+            exit_status = 1
         else:
             chosen_log = log.info
         chosen_log("Restore complete. {}/{} (successful/total)".format(restored, total))
+        if restored < len(bakfiles) and exit_status == 0:
+            log.warning("Number of restored DBs is less than total files. That's suspicious")
+            exit_status = 1
+        exit(exit_status)
