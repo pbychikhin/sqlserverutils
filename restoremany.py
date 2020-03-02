@@ -10,7 +10,7 @@ from backupmany import getLogger, DBConnect
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 
-_VERSION = "0.2.2"
+_VERSION = "to_be_filled_by_CI"
 
 color_init()
 _YB = Fore.YELLOW + Style.BRIGHT    # Yellow Bright

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from zipfile import ZipFile
 from concurrent.futures import ThreadPoolExecutor
 
-_VERSION = "0.2.2"
+_VERSION = "to_be_filled_by_CI"
 
 def getLogger(dsuffix=None, tofile=False, tostdout=False):
     """

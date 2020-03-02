@@ -1,0 +1,96 @@
+
+version: 2.1
+
+orbs:
+  win: circleci/windows@2.4.0
+
+workflows:
+  version: 2
+  workflow1:
+    jobs:
+      - build:
+          filters:
+            branches: &BRANCHES
+              only:
+                - issue_17_CircleCI
+
+jobs:
+  build:
+    executor: win/default
+    environment: &ENVIRONMENT
+      ARTIFACTSDIR: artifacts
+      DISTDIR: dist
+      PYFILES: "*.py"
+      AUXFILES: |
+        requirements.txt
+    steps:
+      - run:
+          name: Install Pyinstaller
+          command: "& pip install --upgrade pyinstaller"
+      - checkout
+      - run:
+          name: Install requirements
+          command: "& pip install --upgrade -r requirements.txt"
+      - run:
+          name: Install prerequisites
+          command: "& choco install zip hub"
+      - run:
+          name: Make the artifacts directory
+          command: new-item $env:ARTIFACTSDIR -itemtype directory
+      - run:
+          name: Process files
+          command: |
+            $ErrorActionPreference = "Stop"
+            $filedesc = @{}
+            $filemaxdesc = "unknown"
+            $filemaxrev = "0"
+            function get_file_info($file, $aliases=@()) {
+              $desc = $(& git describe --tags --long $(& git log -n 1 --pretty=%H $file)).split("-")
+              $num = $desc[0]
+              $patch_num = $desc[1]
+              $git_hash = $desc[2].substring(1)
+              $script:filedesc[$file] = "${num}.${patch_num} (${git_hash})"
+              foreach ($item in $aliases) {
+                $script:filedesc[$item] = "${num}.${patch_num} (${git_hash})"
+              }
+              if ($num -gt $script:filemaxrev) {
+                $script:filemaxrev = $num
+                $script:filemaxdesc = $desc
+              }
+            }
+            foreach ($file in Get-Item $($env:PYFILES -split "`n" | Where-Object {$_ -notmatch "^\s*$"} | ForEach-Object {$_.trim()})) {
+              "Processing Python file {0}" -F $file.name
+              get_file_info $file.name @($file.basename + ".exe")
+              Get-Content $file | ForEach-Object {$_ -replace "^_VERSION\s*=\s*`"to_be_filled_by_CI`"", $("_VERSION = `"{0}`"" -F $filedesc[$file.name])} | Set-Content $(Join-Path $env:ARTIFACTSDIR $file.name)
+              & pyinstaller.exe -F --clean $(Join-Path $env:ARTIFACTSDIR $file.name)
+              copy-item $(Join-Path $env:DISTDIR $($file.basename + ".exe")) $env:ARTIFACTSDIR
+            }
+            foreach ($file in Get-Item $($env:AUXFILES -split "`n" | Where-Object {$_ -notmatch "^\s*$"} | ForEach-Object {$_.trim()})) {
+              "Copying auxiliary file {0}" -F $file.name
+              get_file_info $file.name
+              copy-item $file $env:ARTIFACTSDIR
+            }
+            "Also archiving everything"
+            Set-Location $env:ARTIFACTSDIR
+            & zip "${env:CIRCLE_PROJECT_REPONAME}.zip" $filedesc.keys
+            Set-Location ..
+            $filedesc["${env:CIRCLE_PROJECT_REPONAME}.zip"] = $filemaxdesc[0]
+            new-item tmp -itemtype directory
+            $filedesc | Export-Clixml tmp\filedesc.xml
+            $filemaxdesc | Export-Clixml tmp\filemaxdesc.xml
+      - run:
+          name: Upload to Github
+          command: |
+            $ErrorActionPreference = "Stop"
+            $filedesc = Import-Clixml tmp\filedesc.xml
+            $filemaxdesc = Import-Clixml tmp\filemaxdesc.xml
+            $tag = $filemaxdesc[0]
+            "Re-creating release $tag"
+            try { & hub release delete $tag } catch {}
+            & hub release create -m $tag $tag
+            Set-Location $env:ARTIFACTSDIR
+            foreach ($file in $filedesc.keys) {
+              "Uploading {0}, version is {1}" -F $file, $filedesc[$file]
+              & hub release edit -a $("{0}#{1} [{2}]" -F $file, $file, $filedesc[$file]) -m $TAG $TAG | Tee-Object -Variable hubout
+              if ($hubout -match "(failed|error)") { exit 1 }
+            }
