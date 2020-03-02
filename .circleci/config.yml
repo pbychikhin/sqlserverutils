@@ -12,7 +12,7 @@ workflows:
           filters:
             branches: &BRANCHES
               only:
-                - issue_17_CircleCI
+                - master
 
 jobs:
   build:
