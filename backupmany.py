@@ -324,15 +324,16 @@ if __name__ == "__main__":
         "workers": (1, 4)  # Default and allowed maximum
     }
     prog_name = Path(sys.argv[0]).name
-    cmd = argparse.ArgumentParser(description="Backups as many DBs as given in command line, "
-                                              "and compressed them to zip-files")
+    cmd = argparse.ArgumentParser(description="Backup as many DBs as given in command line "
+                                              "(and compress them to zip-files if server's compression not available)")
     cmd.add_argument("-s", metavar=r"host\instance", help="SQL server name ({})".format(defaults["server"]),
                      default=defaults["server"])
     cmd.add_argument("-d", metavar="list", help="Comma separated list of DB names", required=True)
     cmd.add_argument("-p", metavar="path", help="Absolute path to the directory to store backups", required=True)
     cmd.add_argument("-x", metavar="text", help="Backup file name prefix ({})".format(defaults["prefix"]),
                      default=defaults["prefix"])
-    cmd.add_argument("-w", metavar="num", help="Max. workers running in parallel ({})".format(defaults["workers"]),
+    cmd.add_argument("-w", metavar="num",
+                     help="Number of workers running in parallel (default/max {dw[0]}/{dw[1]})".format(dw=defaults["workers"]),
                      default=defaults["workers"][0], type=int)
     cmd.add_argument("-r", metavar="timestr", help="Retention time of old files, w(eeks)d(days)h(ours)m(inutes). "
                                                    "If given, the script performs clean up")

@@ -375,7 +375,7 @@ if __name__ == "__main__":
         "default_data_log": "fromdb"
     }
     prog_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
-    cmd = argparse.ArgumentParser(description="Restores DB backups (files with *.bak ext) from the dir specified or "
+    cmd = argparse.ArgumentParser(description="Restore DB backups (files with *.bak ext) from the dir specified or "
                                               "from a single file")
     cmd.add_argument("-s", metavar=r"host\instance", help="SQL server name ({})".format(defaults["server"]),
                      default=defaults["server"])
@@ -385,13 +385,14 @@ if __name__ == "__main__":
     cmd.add_argument("-p", metavar="<fromdb | fromfile | abs_path>", default=defaults["default_data_log"],
                      help="Default data/log directory path ({})".format(defaults["default_data_log"]))
     cmd.add_argument("-b", help="Batch mode ({})".format(False), action="store_true", default=False)
-    cmd.add_argument("-w", metavar="num", help="Max. workers running in parallel for batch mode({})".
-                     format(defaults["workers"]), default=defaults["workers"][0], type=int)
+    cmd.add_argument("-w", metavar="num",
+                     help="Number of workers running in parallel for batch mode (default/max {dw[0]}/{dw[1]})".
+                     format(dw=defaults["workers"]), default=defaults["workers"][0], type=int)
     cmd.add_argument("-u", metavar="name", help="Fix user permissions after restore for the specified user")
     cmd.add_argument("-r", help="Replace existing DB ({})".format(False), action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
     cmd.add_argument("--nointerrupt",
-                     help="Nointerrupt mode (Ctrl+C is not supposed to be pressed) ({})".format(False),
+                     help="Nointerrupt mode (slightly faster than regular, Ctrl+C is not supposed to be pressed) ({})".format(False),
                      action="store_true", default=False)
     cmd.add_argument("--logtofile", help="Enable log to file ({})".format(False), action="store_true", default=False)
     cmd.add_argument("--logtostdout", help="Log to stdout instead of stderr ({})".format(False),
