@@ -4,6 +4,7 @@ import sys
 import logging
 import zipfile
 import re
+import yaml
 from sys import exit
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -140,7 +141,31 @@ class DBSet:
         return self.dbset
 
 
-def backupDB(dbc, name, names, path, prefix, log):
+def prepareConfig(config):
+    """
+    Prepares config so it can be later used with no issues:
+    lowercases db keys so there will be no issues during search, creates default if not exist
+    :param config: config dict
+    :return: None
+    """
+    if "suffix" in config:
+        if not isinstance(config["suffix"], dict):
+            raise RuntimeError("Config suffix section should be dict")
+        if "default" not in config["suffix"]:
+            config["suffix"]["default"] = "SELECT 'noversion';"
+        if "databases" not in config["suffix"]:
+            config["suffix"]["databases"] = dict()
+        elif not isinstance(config["suffix"], dict):
+            raise RuntimeError("Config suffix section should be dict")
+        add_config = dict()
+        for key, value in config["suffix"]["databases"].items():
+            key_lower = key.lower()
+            if key_lower not in config["suffix"]["databases"]:
+                add_config[key_lower] = value
+        config["suffix"]["databases"].update(add_config)
+
+
+def backupDB(dbc, name, names, path, prefix, log, config=None):
     """
     Backups a db to a directory, checks a name against existent ones before backing up
     :param dbc: DBConnect obj
@@ -149,17 +174,28 @@ def backupDB(dbc, name, names, path, prefix, log):
     :param path: Path to the backup directory
     :param prefix: Backup file prefix
     :param log: logger obj
+    :param config: config dict
     :return: backup name or None
     """
     if names.exists(name):
         con = dbc.getcon()
         if con is not None:
-            bak_name = "_".join((prefix, name, datetime.today().strftime("%Y%m%d_%H%M%S"))) + ".bak"
-            full_bak_name = Path(path).joinpath(bak_name).as_posix()
-            log.info("Backing up DB \"{}\" to \"{}\"".format(name, full_bak_name))
-            is_compressed = False
             try:
+                suffix = None
+                suffix_query = None
+                if config:
+                    if "suffix" in config:
+                        log.debug("Determining suffix query")
+                        suffix_query = config["suffix"]["databases"].get(name.lower(), config["suffix"]["default"])
+                is_compressed = False
                 with con.cursor() as cur:
+                    if suffix_query:
+                        cur.execute("USE {};".format(name))
+                        cur.execute(suffix_query)
+                        suffix = (cur.fetchone())[0]
+                    bak_name = "_".join((prefix, name, datetime.today().strftime("%Y%m%d_%H%M%S"))) + ("_{}.bak".format(suffix) if suffix else ".bak")
+                    full_bak_name = Path(path).joinpath(bak_name).as_posix()
+                    log.info("Backing up DB \"{}\" to \"{}\"".format(name, full_bak_name))
                     try:
                         cur.execute("BACKUP DATABASE ? TO DISK = ? WITH COPY_ONLY, COMPRESSION;", (name, full_bak_name.replace("/", "\\")))
                     except pyodbc.ProgrammingError:
@@ -224,7 +260,7 @@ def compressBak(name, path, log):
                 log.exception("Could not remove \"{}\"".format(full_zip_tmp_name))
 
 
-def backupAndCompress(dbc, name, names, path, prefix, log):
+def backupAndCompress(dbc, name, names, path, prefix, log, config=None):
     """
     Combines backup and compress operation. To be used as a thread's target
     :param dbc: DBConnect obj
@@ -233,9 +269,10 @@ def backupAndCompress(dbc, name, names, path, prefix, log):
     :param path: Path to the backup directory
     :param prefix: Backup file prefix
     :param log: logger obj
+    :param config: config dict
     :return: zip-file name or None
     """
-    bak_info = backupDB(dbc, name, names, path, prefix, log)
+    bak_info = backupDB(dbc, name, names, path, prefix, log, config)
     zip_name = None
     if bak_info is not None:
         if bak_info[1]:
@@ -256,10 +293,11 @@ def removeOld(path, name, prefix, rttime, simulate, log):
     :param log: logger obj
     :return: a tuple: (Total items number, Removed items number)
     """
-    item_glob_pattern = "{prefix}_{name}_????????_??????.{suffix}"  # a pattern of backup files
+    item_glob_pattern = "{prefix}_{name}_????????_??????*.{suffix}"  # a pattern of backup files
+    item_re_pattern = "({})_(\S*)_(\d{{8}}_\d{{6}})(?:_\S+)?\.(\S+)"  # a pattern for RE
     try:
         name_parts = dict(zip(("prefix", "name", "timestamp", "suffix"),
-                              re.search("({})_(\S*)_(\d{{8}}_\d{{6}})\.(\S+)".format(prefix), name).groups()))
+                              re.search(item_re_pattern.format(prefix), name).groups()))
     except Exception:
         log.exception("Could not find valid name parts in \"{}\"".format(name))
         return 0, 0
@@ -268,7 +306,7 @@ def removeOld(path, name, prefix, rttime, simulate, log):
     except Exception:
         log.exception("Could not convert \"{}\" to time".format(name_parts["timestamp"]))
         return 0, 0
-    log.debug("Performing clean up for \"{}\"".format(item_glob_pattern.format(**name_parts)))
+    log.debug("Performing cleanup for \"{}\"".format(item_glob_pattern.format(**name_parts)))
     count = {"total": 0, "removed": 0}
     for item in Path(path).glob(item_glob_pattern.format(**name_parts)):
         if item.name == name:
@@ -276,9 +314,8 @@ def removeOld(path, name, prefix, rttime, simulate, log):
             continue
         count["total"] += 1
         try:
-            item_parts = dict(zip(("prefix", "name", "timestamp", "suffix"),
-                              re.search("({})_(\S*)_(\d{{8}}_\d{{6}})\.(\S+)".format(prefix),
-                                        item.as_posix()).groups()))
+            item_parts = dict(zip(("prefix", "name", "timestamp", "suffix"), re.search(item_re_pattern.format(prefix),
+                                                                                       item.as_posix()).groups()))
             item_time = datetime.strptime(item_parts["timestamp"], "%Y%m%d_%H%M%S")
         except Exception:
             log.debug("Skipping irrelevant file \"{}\"".format(item.as_posix()))
@@ -324,8 +361,21 @@ if __name__ == "__main__":
         "workers": (1, 4)  # Default and allowed maximum
     }
     prog_name = Path(sys.argv[0]).name
-    cmd = argparse.ArgumentParser(description="Backup as many DBs as given in command line "
-                                              "(and compress them to zip-files if server's compression not available)")
+    prog_description = """\
+Backup as many DBs as given in command line
+(and compress them to zip-files if server's compression not available)\
+"""
+    config_description = """\
+YAML config (-c) may look like:
+suffix:
+    default: SELECT CONCAT('v', Version) FROM Version;
+    databases:
+        db1: SELECT CONCAT('v', V1) FROM VersionInfo;
+        db2: SELECT CONCAT('DBversion', Ver) FROM DBInfo;\
+    """
+    cmd = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
+                                  description=prog_description,
+                                  epilog=config_description)
     cmd.add_argument("-s", metavar=r"host\instance", help="SQL server name ({})".format(defaults["server"]),
                      default=defaults["server"])
     cmd.add_argument("-d", metavar="list", help="Comma separated list of DB names", required=True)
@@ -336,15 +386,26 @@ if __name__ == "__main__":
                      help="Number of workers running in parallel (default/max {dw[0]}/{dw[1]})".format(dw=defaults["workers"]),
                      default=defaults["workers"][0], type=int)
     cmd.add_argument("-r", metavar="timestr", help="Retention time of old files, w(eeks)d(days)h(ours)m(inutes). "
-                                                   "If given, the script performs clean up")
+                                                   "If given, the script performs cleanup")
     cmd.add_argument("-m", help="Simulate file removal - just write a log record", action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
+    cmd.add_argument("-c", metavar="path", help="YAML config file path")
     cmd.add_argument("--logtofile", help="Enable log to file ({})".format(False), action="store_true", default=False)
     cmd.add_argument("--logtostdout", help="Log to stdout instead of stderr ({})".format(False),
                      action="store_true", default=False)
     cmd.add_argument("-v", action="version", version=_VERSION)
     cmdargs = cmd.parse_args()
     log = getLogger(cmdargs.l, cmdargs.logtofile, cmdargs.logtostdout)
+    config = None
+    if cmdargs.c:
+        try:
+            with open(cmdargs.c) as configstream:
+                config = yaml.load(configstream, yaml.CLoader) or dict()
+            log.debug("Preparing config")
+            prepareConfig(config)
+        except Exception:
+            log.exception("Could not process config file {}".format(cmdargs.c))
+            exit(1)
     if not Path(cmdargs.p).is_absolute():
         log.critical("The path to the backup directory is not absolute")
         exit(1)
@@ -352,7 +413,7 @@ if __name__ == "__main__":
         cmdargs.r = getTimeDelta(cmdargs.r, log)
         if cmdargs.r is None:
             log.critical("Retention time string wasn't parsed. Probably, the string is not correct. "
-                         "Clean up will not be performed")
+                         "Cleanup will not be performed")
             exit(1)
         else:
             log.debug("Retention time is set to {}".format(cmdargs.r))
@@ -372,14 +433,15 @@ if __name__ == "__main__":
                                                            (names,) * len(cmdargs.d),
                                                            (cmdargs.p,) * len(cmdargs.d),
                                                            (cmdargs.x,) * len(cmdargs.d),
-                                                           (log,) * len(cmdargs.d)) if name is not None)
+                                                           (log,) * len(cmdargs.d),
+                                                           (config,) * len(cmdargs.d)) if name is not None)
         exit_status = 0
         if len(cmdargs.d) == len(successes):
             chosen_log = log.info
         else:
             chosen_log = log.warning
             exit_status = 1
-        chosen_log("Back up complete. {} successfull out of {}".format(len(successes), len(cmdargs.d)))
+        chosen_log("Backup complete. {}/{} (successfull/total)".format(len(successes), len(cmdargs.d)))
         if cmdargs.r is not None:
             log.info("Cleaning up from old files")
             for item in successes:
