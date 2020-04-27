@@ -185,7 +185,7 @@ def backupDB(dbc, name, names, path, prefix, log, config=None):
                 suffix_query = None
                 if config:
                     if "suffix" in config:
-                        log.debug("Determining suffix query")
+                        log.debug("Determining suffix query for \"{}\"".format(name))
                         suffix_query = config["suffix"]["databases"].get(name.lower(), config["suffix"]["default"])
                 is_compressed = False
                 with con.cursor() as cur:
@@ -193,6 +193,8 @@ def backupDB(dbc, name, names, path, prefix, log, config=None):
                         cur.execute("USE {};".format(name))
                         cur.execute(suffix_query)
                         suffix = (cur.fetchone())[0]
+                    else:
+                        log.debug("Suffix query for \"{}\" is null - no suffix will be added to the backup file".format(name))
                     bak_name = "_".join((prefix, name, datetime.today().strftime("%Y%m%d_%H%M%S"))) + ("_{}.bak".format(suffix) if suffix else ".bak")
                     full_bak_name = Path(path).joinpath(bak_name).as_posix()
                     log.info("Backing up DB \"{}\" to \"{}\"".format(name, full_bak_name))
@@ -371,7 +373,9 @@ suffix:
     default: SELECT CONCAT('v', Version) FROM Version;
     databases:
         db1: SELECT CONCAT('v', V1) FROM VersionInfo;
-        db2: SELECT CONCAT('DBversion', Ver) FROM DBInfo;\
+        db2: SELECT CONCAT('DBversion', Ver) FROM DBInfo;
+        # the null below excludes db3 from suffix processing
+        db3: null\
     """
     cmd = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                   description=prog_description,
