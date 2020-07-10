@@ -110,14 +110,14 @@ class DBSet:
         """
         self.log = log
         con = dbc.getcon()
-        self.dbset = set()
+        self.dbset = dict()
         if con is not None:
             try:
                 with con.cursor() as cur:
-                    cur.execute("SELECT name FROM sys.databases;")
+                    cur.execute("SELECT name, recovery_model_desc FROM sys.databases;")
                     for row in cur.fetchall():
                         self.log.debug("Found database \"{}\"".format(row[0].lower()))
-                        self.dbset.add(row[0].lower())
+                        self.dbset[row[0].lower()] = {"recovery_model": row[1]}
             except Exception:
                 self.log.exception("DB operation failed")
             con.close()
@@ -133,9 +133,17 @@ class DBSet:
         else:
             return False
 
+    def get_recovery_model(self, dbname):
+        """
+        Returns database recovery model
+        :param dbname:
+        :return: database's recovery mode (text)
+        """
+        return self.dbset[dbname.lower()]["recovery_model"]
+
     def getall(self):
         """
-        Returns a var whick keeps the DB set
+        Returns a var that keeps the DB set
         :return: a set with DB names
         """
         return self.dbset
@@ -165,7 +173,7 @@ def prepareConfig(config):
         config["suffix"]["databases"].update(add_config)
 
 
-def backupDB(dbc, name, names, path, prefix, log, config=None):
+def backupDB(dbc, name, names, path, prefix, log, config=None, shrink=False):
     """
     Backups a db to a directory, checks a name against existent ones before backing up
     :param dbc: DBConnect obj
@@ -175,6 +183,7 @@ def backupDB(dbc, name, names, path, prefix, log, config=None):
     :param prefix: Backup file prefix
     :param log: logger obj
     :param config: config dict
+    :param shrink: shrink the DB before backing up
     :return: backup name or None
     """
     if names.exists(name):
@@ -189,6 +198,16 @@ def backupDB(dbc, name, names, path, prefix, log, config=None):
                         suffix_query = config["suffix"]["databases"].get(name.lower(), config["suffix"]["default"])
                 is_compressed = False
                 with con.cursor() as cur:
+                    if shrink:
+                        log.info("Shrinking DB \"{}\"".format(name))
+                        if names.get_recovery_model(name) != "SIMPLE":
+                            log.debug("Shrinking: swithching DB \"{}\" to SIMPLE".format(name))
+                            cur.execute("ALTER DATABASE {} SET RECOVERY SIMPLE;".format(name))
+                        log.debug("Shrinking: doing shrink of DB \"{}\"".format(name))
+                        cur.execute("DBCC SHRINKDATABASE(?) WITH NO_INFOMSGS;", (name, ))
+                        if names.get_recovery_model(name) != "SIMPLE":
+                            log.debug("Shrinking: swithching DB \"{}\" back to {}".format(name, names.get_recovery_model(name)))
+                            cur.execute("ALTER DATABASE {} SET RECOVERY {};".format(name, names.get_recovery_model(name)))
                     if suffix_query:
                         cur.execute("USE {};".format(name))
                         cur.execute(suffix_query)
@@ -262,7 +281,7 @@ def compressBak(name, path, log):
                 log.exception("Could not remove \"{}\"".format(full_zip_tmp_name))
 
 
-def backupAndCompress(dbc, name, names, path, prefix, log, config=None):
+def backupAndCompress(dbc, name, names, path, prefix, log, config=None, shrink=False):
     """
     Combines backup and compress operation. To be used as a thread's target
     :param dbc: DBConnect obj
@@ -272,9 +291,10 @@ def backupAndCompress(dbc, name, names, path, prefix, log, config=None):
     :param prefix: Backup file prefix
     :param log: logger obj
     :param config: config dict
+    :param shrink: shrink the DB before backing up
     :return: zip-file name or None
     """
-    bak_info = backupDB(dbc, name, names, path, prefix, log, config)
+    bak_info = backupDB(dbc, name, names, path, prefix, log, config, shrink)
     zip_name = None
     if bak_info is not None:
         if bak_info[1]:
@@ -394,6 +414,7 @@ suffix:
     cmd.add_argument("-m", help="Simulate file removal - just write a log record", action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
     cmd.add_argument("-c", metavar="path", help="YAML config file path")
+    cmd.add_argument("--shrink", help="Truncate log and shrink DB before backung up ({})".format(False), action="store_true", default=False)
     cmd.add_argument("--logtofile", help="Enable log to file ({})".format(False), action="store_true", default=False)
     cmd.add_argument("--logtostdout", help="Log to stdout instead of stderr ({})".format(False),
                      action="store_true", default=False)
@@ -438,7 +459,8 @@ suffix:
                                                            (cmdargs.p,) * len(cmdargs.d),
                                                            (cmdargs.x,) * len(cmdargs.d),
                                                            (log,) * len(cmdargs.d),
-                                                           (config,) * len(cmdargs.d)) if name is not None)
+                                                           (config,) * len(cmdargs.d),
+                                                           (cmdargs.shrink,) * len(cmdargs.d)) if name is not None)
         exit_status = 0
         if len(cmdargs.d) == len(successes):
             chosen_log = log.info
