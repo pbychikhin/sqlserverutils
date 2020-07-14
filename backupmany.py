@@ -114,10 +114,10 @@ class DBSet:
         if con is not None:
             try:
                 with con.cursor() as cur:
-                    cur.execute("SELECT name, recovery_model_desc FROM sys.databases;")
+                    cur.execute("SELECT name, recovery_model_desc, user_access_desc FROM sys.databases;")
                     for row in cur.fetchall():
                         self.log.debug("Found database \"{}\"".format(row[0].lower()))
-                        self.dbset[row[0].lower()] = {"recovery_model": row[1]}
+                        self.dbset[row[0].lower()] = {"recovery_model": row[1], "user_access": row[2]}
             except Exception:
                 self.log.exception("DB operation failed")
             con.close()
@@ -140,6 +140,14 @@ class DBSet:
         :return: database's recovery mode (text)
         """
         return self.dbset[dbname.lower()]["recovery_model"]
+
+    def get_user_access_mode(self, dbname):
+        """
+        Returns database user access mode
+        :param dbname:
+        :return: database's user access mode (text)
+        """
+        return self.dbset[dbname.lower()]["user_access"]
 
     def getall(self):
         """

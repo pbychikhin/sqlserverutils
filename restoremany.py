@@ -6,7 +6,7 @@ from glob import glob
 from sys import exit
 from copy import deepcopy
 from colorama import init as color_init, Fore, Style
-from backupmany import getLogger, DBConnect
+from backupmany import getLogger, DBConnect, DBSet
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 
@@ -239,7 +239,7 @@ class PathMap:
 stop_restore = False
 nointerrupt = False
 
-def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, replace=False, pm=None, sp=None):
+def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, replace=False, pm=None, sp=None, names=None):
     """
     Restores all DBs from file
     :param dbc: DBConnect obj
@@ -251,6 +251,7 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
     :param replace: force replacing existing DB
     :param pm: shared PathMap object. Allows saving state between restoreDB invocations
     :param sp: shared ServerProperties object
+    :param names: shared DBSet object (names and metadata of databases found in the SQL instance)
     :return: a dict - total and restored DBs
     """
     count = {"total": 0, "restored": 0}
@@ -269,6 +270,8 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
         pm = PathMap()
     if not sp:
         sp = ServerProperties(dbc, log)
+    if not names:
+        names = DBSet(dbc, log)
     for item in BackupFile(backupfile, dbc, log).get_backupsets():
         backupset = BackupSet(backupfile, item, dbc, log)
         log.info("Restoring DB \"{}\"".format(backupset.get_dbname()))
@@ -342,13 +345,20 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
                         fcount += 1
                     cur.execute("SELECT name FROM sys.databases WHERE name = ?", (backupset.get_dbname(),))
                     if len(cur.fetchall()):
+                        log.debug("Setting DB \"{}\" to SINGLE_USER".format(backupset.get_dbname()))
                         cur.execute("ALTER DATABASE {} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;".
                                     format(backupset.get_dbname()))
-                    cur.execute("RESTORE DATABASE ? FROM DISK = ? WITH {}FILE = ?, ".
-                                format("REPLACE, " if replace else "") + with_move + ";",
-                                (backupset.get_dbname(), backupfile, backupset.get_fileno(), *(sum(files.items(), ()))))
-                    while cur.nextset():
-                        pass
+                        try:
+                            log.debug("Performing restore of DB \"{}\"".format(backupset.get_dbname()))
+                            cur.execute("RESTORE DATABASE ? FROM DISK = ? WITH {}FILE = ?, ".
+                                        format("REPLACE, " if replace else "") + with_move + ";",
+                                        (backupset.get_dbname(), backupfile, backupset.get_fileno(), *(sum(files.items(), ()))))
+                            while cur.nextset():
+                                pass
+                        finally:
+                            log.debug("Setting DB \"{}\" to {} explicitly".format(backupset.get_dbname(), names.get_user_access_mode(backupset.get_dbname())))
+                            cur.execute("ALTER DATABASE {} SET {} WITH ROLLBACK IMMEDIATE;".
+                                        format(backupset.get_dbname(), names.get_user_access_mode(backupset.get_dbname())))
                     if user:
                         log.debug("Fixing user permissions for user {} on DB {}".format(user, backupset.get_dbname()))
                         cur.execute("USE {};".format(backupset.get_dbname()))
@@ -419,6 +429,7 @@ if __name__ == "__main__":
         interactive = False if cmdargs.b else True
         pm = PathMap()
         sp = ServerProperties(dbc, log)
+        names = DBSet(dbc, log)
         if cmdargs.nointerrupt:
             nointerrupt = True
         with ThreadPoolExecutor(max_workers=min(cmdargs.w, defaults["workers"][1])) as executor:
@@ -432,7 +443,8 @@ if __name__ == "__main__":
                                                               (cmdargs.u,) * len(bakfiles),
                                                               (cmdargs.r,) * len(bakfiles),
                                                               (pm,) * len(bakfiles),
-                                                              (sp,) * len(bakfiles)))
+                                                              (sp,) * len(bakfiles),
+                                                              (names,) * len(bakfiles)))
             except KeyboardInterrupt:
                 stop_restore = True
                 exit(1)
