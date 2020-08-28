@@ -239,7 +239,7 @@ class PathMap:
 stop_restore = False
 nointerrupt = False
 
-def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, replace=False, pm=None, sp=None, names=None):
+def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, users=None, replace=False, pm=None, sp=None, names=None):
     """
     Restores all DBs from file
     :param dbc: DBConnect obj
@@ -247,7 +247,7 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
     :param log: logger obj
     :param defaultpath: fromdb or fromfile, or the absolute path to a directory
     :param interactive: interactively ask for DB files relocation path
-    :param user: user to fix permissions for
+    :param users: list of users to fix permissions for
     :param replace: force replacing existing DB
     :param pm: shared PathMap object. Allows saving state between restoreDB invocations
     :param sp: shared ServerProperties object
@@ -328,7 +328,7 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
         if con is not None:
             try:
                 with con.cursor() as cur:
-                    if user:
+                    for user in users:
                         log.debug("Checking if user {} exists".format(user))
                         cur.execute("USE master;")
                         cur.execute("SELECT name FROM sys.server_principals WHERE name = ?;", (user,))
@@ -359,14 +359,14 @@ def restoreDB(dbc, backupfile, log, defaultpath, interactive=False, user=None, r
                             log.debug("Setting DB \"{}\" to {} explicitly".format(backupset.get_dbname(), names.get_user_access_mode(backupset.get_dbname())))
                             cur.execute("ALTER DATABASE {} SET {} WITH ROLLBACK IMMEDIATE;".
                                         format(backupset.get_dbname(), names.get_user_access_mode(backupset.get_dbname())))
-                    if user:
+                    for user in users:
                         log.debug("Fixing user permissions for user {} on DB {}".format(user, backupset.get_dbname()))
                         cur.execute("USE {};".format(backupset.get_dbname()))
                         cur.execute("SELECT name FROM sys.database_principals WHERE name = ?;", (user,))
                         if len(cur.fetchall()) < 1:
                             log.debug("Creating user mapping for user {} in DB {}".format(user, backupset.get_dbname()))
-                            cur.execute("CREATE USER {} FROM LOGIN {};".format(user, user))
-                        cur.execute("ALTER USER {} WITH LOGIN = {};".format(user, user))
+                            cur.execute("CREATE USER [{}] FROM LOGIN [{}];".format(user, user))
+                        cur.execute("ALTER USER [{}] WITH LOGIN = [{}];".format(user, user))
                         cur.execute("EXEC sp_addrolemember 'db_owner', ?;", (user,))
             except Exception:
                 log.exception("Restore operation failed")
@@ -398,7 +398,7 @@ if __name__ == "__main__":
     cmd.add_argument("-w", metavar="num",
                      help="Number of workers running in parallel for batch mode (default/max {dw[0]}/{dw[1]})".
                      format(dw=defaults["workers"]), default=defaults["workers"][0], type=int)
-    cmd.add_argument("-u", metavar="name", help="Fix user permissions after restore for the specified user")
+    cmd.add_argument("-u", metavar="names", help="Comma-separated list of users to fix permissions for")
     cmd.add_argument("-r", help="Replace existing DB ({})".format(False), action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
     cmd.add_argument("--nointerrupt",
@@ -418,6 +418,10 @@ if __name__ == "__main__":
         bakfiles = glob(os.path.join(cmdargs.d, "*.bak"))
     else:
         bakfiles = (cmdargs.f,)
+    if cmdargs.u is not None:
+        cmdargs.u = [u.strip() for u in cmdargs.u.split(",")]
+    else:
+        cmdargs.u = []
     dbc = DBConnect(cmdargs.s, prog_name, log)
     log.info("Checking DB connection")
     if dbc.getcon() is None:
