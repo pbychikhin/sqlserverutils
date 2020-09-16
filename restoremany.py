@@ -462,7 +462,9 @@ if __name__ == "__main__":
                                               "from a single file")
     cmd.add_argument("-s", metavar=r"host\instance", help="SQL server name ({})".format(defaults["server"]),
                      default=defaults["server"])
-    cmd.add_argument("-f", metavar="path", help="Absolute path to a backup file or directory with backup files", action="append")
+    cmdgroup1 = cmd.add_mutually_exclusive_group(required=True)
+    cmdgroup1.add_argument("-d", metavar="path", help="DEPRECATED! KEPT FOR COMPATIBILITY! Absolute path to a backup file or directory with backup files", action="append")
+    cmdgroup1.add_argument("-f", metavar="path", help="Absolute path to a backup file or directory with backup files", action="append")
     cmd.add_argument("-p", metavar="<fromdb | fromfile | abs_path>", default=defaults["default_data_log"],
                      help="Default data/log directory path ({})".format(defaults["default_data_log"]))
     cmd.add_argument("-b", help="Batch mode ({})".format(False), action="store_true", default=False)
@@ -484,17 +486,21 @@ if __name__ == "__main__":
     cmdargs = cmd.parse_args()
     log = getLogger(cmdargs.l, cmdargs.logtofile, cmdargs.logtostdout)
     bakfiles = []
-    for f in cmdargs.f:
-        if not os.path.isabs(f):
-            log.critical("The path to the backup file/directory \"{}\" is not absolute".format(f))
-            exit(1)
-        if os.path.isdir(f):
-            bakfiles.extend(glob(os.path.join(f, "*.bak")))
-        elif os.path.isfile(f):
-            bakfiles.append(f)
-        else:
-            log.critical("Unsupported backup file/directory \"{}\"".format(f))
-            exit(1)
+    if cmdargs.d or cmdargs.f:
+        if cmdargs.d:
+            log.warning("The -d argument is deprecated! Please use -f for both file and/or directory")
+            cmdargs.f = cmdargs.d
+        for f in cmdargs.f:
+            if not os.path.isabs(f):
+                log.critical("The path to the backup file/directory \"{}\" is not absolute".format(f))
+                exit(1)
+            if os.path.isdir(f):
+                bakfiles.extend(glob(os.path.join(f, "*.bak")))
+            elif os.path.isfile(f):
+                bakfiles.append(f)
+            else:
+                log.critical("Unsupported backup file/directory \"{}\"".format(f))
+                exit(1)
     cmdargs.u = list_from_str(cmdargs.u)
     cmdargs.only = list_from_str(cmdargs.only)
     cmdargs.exclude = list_from_str(cmdargs.exclude)
@@ -544,7 +550,7 @@ if __name__ == "__main__":
         else:
             chosen_log = log.info
         chosen_log("Restore complete. {}/{} (successful/total)".format(restored, total))
-        if restored < len(filesets) and exit_status == 0:
+        if restored < len(filesets) and not cmdargs.only and not cmdargs.exclude and exit_status == 0:
             log.warning("Number of restored DBs is less than total backup filesets. That's suspicious")
             exit_status = 1
         exit(exit_status)
