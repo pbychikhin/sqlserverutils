@@ -463,8 +463,8 @@ if __name__ == "__main__":
     cmd.add_argument("-s", metavar=r"host\instance", help="SQL server name ({})".format(defaults["server"]),
                      default=defaults["server"])
     cmdgroup1 = cmd.add_mutually_exclusive_group(required=True)
-    cmdgroup1.add_argument("-d", metavar="path", help="DEPRECATED! KEPT FOR COMPATIBILITY! Absolute path to a backup file or directory with backup files", action="append")
-    cmdgroup1.add_argument("-f", metavar="path", help="Absolute path to a backup file or directory with backup files", action="append")
+    cmdgroup1.add_argument("-d", metavar="path", help="DEPRECATED! KEPT FOR COMPATIBILITY! Absolute path to a backup file or directory with backup files. Multiple -d are allowed", action="append")
+    cmdgroup1.add_argument("-f", metavar="path", help="Absolute path to a backup file or directory with backup files. Multiple -f are allowed", action="append")
     cmd.add_argument("-p", metavar="<fromdb | fromfile | abs_path>", default=defaults["default_data_log"],
                      help="Default data/log directory path ({})".format(defaults["default_data_log"]))
     cmd.add_argument("-b", help="Batch mode ({})".format(False), action="store_true", default=False)
