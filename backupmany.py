@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from zipfile import ZipFile
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 
 _VERSION = "to_be_filled_by_CI"
 
@@ -108,19 +109,32 @@ class DBSet:
         :param dbc: DBConnect obj
         :param log: logger obj
         """
+        self.dbc = dbc
         self.log = log
-        con = dbc.getcon()
         self.dbset = dict()
-        if con is not None:
-            try:
-                with con.cursor() as cur:
-                    cur.execute("SELECT name, recovery_model_desc, user_access_desc FROM sys.databases;")
-                    for row in cur.fetchall():
-                        self.log.debug("Found database \"{}\"".format(row[0].lower()))
-                        self.dbset[row[0].lower()] = {"recovery_model": row[1], "user_access": row[2]}
-            except Exception:
-                self.log.exception("DB operation failed")
-            con.close()
+        self.e_updated = Event()
+        self.l_update = Lock()
+        self.update()
+
+    def update(self):
+        self.l_update.acquire()
+        self.e_updated.clear()
+        self.log.debug("Update the list of known DBs")
+        try:
+            con = self.dbc.getcon()
+            if con is not None:
+                try:
+                    with con.cursor() as cur:
+                        cur.execute("SELECT name, recovery_model_desc, user_access_desc FROM sys.databases;")
+                        for row in cur.fetchall():
+                            self.log.debug("Found database \"{}\"".format(row[0].lower()))
+                            self.dbset[row[0].lower()] = {"recovery_model": row[1], "user_access": row[2]}
+                except Exception:
+                    self.log.exception("DB operation failed")
+                con.close()
+        finally:
+            self.e_updated.set()
+            self.l_update.release()
 
     def exists(self, dbname):
         """
@@ -128,6 +142,7 @@ class DBSet:
         :param dbname:
         :return: True of False
         """
+        self.e_updated.wait()
         if dbname.lower() in self.dbset:
             return True
         else:
@@ -139,6 +154,7 @@ class DBSet:
         :param dbname:
         :return: database's recovery mode (text)
         """
+        self.e_updated.wait()
         return self.dbset[dbname.lower()]["recovery_model"]
 
     def get_user_access_mode(self, dbname):
@@ -147,6 +163,7 @@ class DBSet:
         :param dbname:
         :return: database's user access mode (text)
         """
+        self.e_updated.wait()
         return self.dbset[dbname.lower()]["user_access"]
 
     def getall(self):
@@ -154,6 +171,7 @@ class DBSet:
         Returns a var that keeps the DB set
         :return: a set with DB names
         """
+        self.e_updated.wait()
         return self.dbset
 
 

@@ -314,7 +314,7 @@ def restoreDB(dbc, filenameset, log, defaultpath, interactive=False, users=None,
         log.debug("Wait for awhile so CTRL+C if pressed could be propagated")
         sleep(1)
     if stop_restore:
-        log.warn("User has requested to stop")
+        log.warning("User has requested to stop")
         return count
     for filename in filenameset:
         if not os.path.isabs(filename):
@@ -337,7 +337,12 @@ def restoreDB(dbc, filenameset, log, defaultpath, interactive=False, users=None,
         backupset = BackupSet(filenameset, item, dbc, log)
         lc_dbname = backupset.get_dbname().lower()
         if lc_dbname not in lc_exclude and (len(lc_only) == 0 or lc_dbname in lc_only):
-            log.info("Restore DB \"{}\"".format(backupset.get_dbname()))
+            name = backupset.get_dbname()
+            log.info("Restore DB \"{}\"".format(name))
+            if interactive:
+                name = winput("[restore database {} as {}]: ".format(ybstr(name), ybstr(name)))
+                if len(name) == 0 or name.isspace():
+                    name = backupset.get_dbname()
             files = dict()
             is_files_correct = False
             count["total"] += 1
@@ -373,8 +378,9 @@ def restoreDB(dbc, filenameset, log, defaultpath, interactive=False, users=None,
                         files[file["LogicalName"]] = physfile
                 if interactive:
                     inprompt = ">>>\n"
+                    inprompt += ">>> restore database {} as {}\n".format(ybstr(backupset.get_dbname()), ybstr(name))
                     for k, v in files.items():
-                        inprompt += ">>> restore {} as {}\n".format(ybstr(k), ybstr(v))
+                        inprompt += ">>> restore file {} as {}\n".format(ybstr(k), ybstr(v))
                     inprompt += ">>> is the above correct? (Y/N): "
                     is_files_correct = winput(inprompt)
                     while len(is_files_correct) == 0 or len(is_files_correct) > 1 or is_files_correct not in "yYnN":
@@ -389,6 +395,8 @@ def restoreDB(dbc, filenameset, log, defaultpath, interactive=False, users=None,
             log.debug("Restore DB files as follows: {}".format(files))
             con = dbc.getcon()
             if con is not None:
+                if interactive:
+                    log.info("Restore DB {} as {}".format(backupset.get_dbname(), name))
                 try:
                     with con.cursor() as cur:
                         for user in users:
@@ -406,37 +414,40 @@ def restoreDB(dbc, filenameset, log, defaultpath, interactive=False, users=None,
                             else:
                                 with_move += "MOVE ? TO ?"
                             fcount += 1
-                        cur.execute("SELECT name FROM sys.databases WHERE name = ?", (backupset.get_dbname(),))
-                        if len(cur.fetchall()):
-                            log.debug("Set DB \"{}\" to SINGLE_USER".format(backupset.get_dbname()))
+                        db_exists = len(cur.execute("SELECT name FROM sys.databases WHERE name = ?", (name,)).fetchall()) > 0
+                        if db_exists:
+                            log.debug("Set DB \"{}\" to SINGLE_USER".format(name))
                             cur.execute("ALTER DATABASE {} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;".
-                                        format(backupset.get_dbname()))
-                            try:
-                                log.debug("Perform restore of DB \"{}\"".format(backupset.get_dbname()))
-                                disk_str = ", ".join(("DISK = ?",) * len(filenameset))
-                                cur.execute("RESTORE DATABASE ? FROM {} WITH {}FILE = ?, ".
-                                            format(disk_str, "REPLACE, " if replace else "") + with_move + ";",
-                                            (backupset.get_dbname(), *filenameset, backupset.get_fileno(), *(sum(files.items(), ()))))
-                                while cur.nextset():
-                                    pass
-                            finally:
-                                log.debug("Set DB \"{}\" to {} explicitly".format(backupset.get_dbname(), names.get_user_access_mode(backupset.get_dbname())))
+                                        format(name))
+                        try:
+                            log.debug("Perform restore of DB \"{}\"".format(name))
+                            disk_str = ", ".join(("DISK = ?",) * len(filenameset))
+                            cur.execute("RESTORE DATABASE ? FROM {} WITH {}FILE = ?, ".
+                                        format(disk_str, "REPLACE, " if replace else "") + with_move + ";",
+                                        (name, *filenameset, backupset.get_fileno(), *(sum(files.items(), ()))))
+                            while cur.nextset():
+                                pass
+                        finally:
+                            if db_exists:
+                                log.debug("Set DB \"{}\" to {} explicitly".format(name, names.get_user_access_mode(name)))
                                 cur.execute("ALTER DATABASE {} SET {} WITH ROLLBACK IMMEDIATE;".
-                                            format(backupset.get_dbname(), names.get_user_access_mode(backupset.get_dbname())))
+                                            format(name, names.get_user_access_mode(name)))
+                            else:
+                                names.update()
                         for user in users:
-                            log.debug("Fix user permissions for user {} on DB {}".format(user, backupset.get_dbname()))
-                            cur.execute("USE {};".format(backupset.get_dbname()))
+                            log.debug("Fix user permissions for user {} on DB {}".format(user, name))
+                            cur.execute("USE {};".format(name))
                             cur.execute("SELECT name FROM sys.database_principals WHERE name = ?;", (user,))
                             if len(cur.fetchall()) < 1:
-                                log.debug("Create user mapping for user {} in DB {}".format(user, backupset.get_dbname()))
+                                log.debug("Create user mapping for user {} in DB {}".format(user, name))
                                 cur.execute("CREATE USER [{}] FROM LOGIN [{}];".format(user, user))
                             cur.execute("ALTER USER [{}] WITH LOGIN = [{}];".format(user, user))
                             cur.execute("EXEC sp_addrolemember 'db_owner', ?;", (user,))
                 except Exception:
                     log.exception("Restore operation failed")
-                    log.info("Failed restoring DB \"{}\"".format(backupset.get_dbname()))
+                    log.info("Failed restoring DB \"{}\"".format(name))
                 else:
-                    log.info("Successfully restored DB \"{}\"".format(backupset.get_dbname()))
+                    log.info("Successfully restored DB \"{}\"".format(name))
                     count["restored"] += 1
                 con.close()
         else:
@@ -455,7 +466,8 @@ if __name__ == "__main__":
     defaults = {
         "server": r"localhost",
         "workers": (1, 4),  # Default and allowed maximum
-        "default_data_log": "fromdb"
+        "default_data_log": "fromdb",
+        "bak_extensions": "bak"
     }
     prog_name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
     cmd = argparse.ArgumentParser(description="Restore DB backups (files with *.bak ext) from the dir specified or "
@@ -474,6 +486,7 @@ if __name__ == "__main__":
     cmd.add_argument("-u", metavar="names", help="Comma-separated list of users to fix permissions for")
     cmd.add_argument("-r", help="Replace existing DB ({})".format(False), action="store_true", default=False)
     cmd.add_argument("-l", metavar="text", help="Distinguishing log file name suffix")
+    cmd.add_argument("--ext", metavar="extensions", help="Dot-separated list of backup file name extensions ({})".format(defaults["bak_extensions"]), default=defaults["bak_extensions"])
     cmd.add_argument("--only", metavar="names", help="Comma-separated list of DB names that should ONLY be restored")
     cmd.add_argument("--exclude", metavar="names", help="Comma-separated list of DB names that should be EXCLUDED from restore")
     cmd.add_argument("--nointerrupt",
@@ -485,22 +498,26 @@ if __name__ == "__main__":
     cmd.add_argument("-v", action="version", version=_VERSION)
     cmdargs = cmd.parse_args()
     log = getLogger(cmdargs.l, cmdargs.logtofile, cmdargs.logtostdout)
+    bakexts = tuple(x.strip() for x in cmdargs.ext.split("."))
     bakfiles = []
     if cmdargs.d or cmdargs.f:
         if cmdargs.d:
             log.warning("The -d argument is deprecated! Please use -f for both file and/or directory")
             cmdargs.f = cmdargs.d
         for f in cmdargs.f:
-            if not os.path.isabs(f):
-                log.critical("The path to the backup file/directory \"{}\" is not absolute".format(f))
-                exit(1)
-            if os.path.isdir(f):
-                bakfiles.extend(glob(os.path.join(f, "*.bak")))
-            elif os.path.isfile(f):
-                bakfiles.append(f)
-            else:
-                log.critical("Unsupported backup file/directory \"{}\"".format(f))
-                exit(1)
+            glob_flist = glob(f)
+            for glob_fname in glob_flist:
+                if not os.path.isabs(glob_fname):
+                    log.critical("The path to the backup file/directory \"{}\" is not absolute".format(glob_fname))
+                    exit(1)
+                if os.path.isdir(glob_fname):
+                    for e in bakexts:
+                        bakfiles.extend(glob(os.path.join(glob_fname, "*.{}".format(e))))
+                elif os.path.isfile(glob_fname):
+                    bakfiles.append(glob_fname)
+                else:
+                    log.critical("Unsupported backup file/directory \"{}\"".format(glob_fname))
+                    exit(1)
     cmdargs.u = list_from_str(cmdargs.u)
     cmdargs.only = list_from_str(cmdargs.only)
     cmdargs.exclude = list_from_str(cmdargs.exclude)
