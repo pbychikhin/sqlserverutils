@@ -14,10 +14,15 @@ from threading import Event, Lock
 
 _VERSION = "to_be_filled_by_CI"
 
-def getLogger(dsuffix=None, tofile=False, tostdout=False):
+
+def getLogger(dsuffix=None, tofile=False, tostdout=False, stream_level=logging.WARNING, file_path=None):
     """
     Prepares logging facility
     :param dsuffix: a distinguishing suffix
+    :param tofile: enable logging to file
+    :param tostdout: stream logging to stdout (some environments consider presence of stderr as an error)
+    :param stream_level: stream log level
+    :param file_path: path to log file, if not given, will be constructed
     :return: logger object to be used in the rest of subs
     """
     log_formatter_stream = logging.Formatter(fmt="{asctime} {message}", style="{")
@@ -26,18 +31,21 @@ def getLogger(dsuffix=None, tofile=False, tostdout=False):
         log_handler_stream = logging.StreamHandler(sys.stdout)
     else:
         log_handler_stream = logging.StreamHandler()
-    log_handler_stream.setLevel(logging.INFO)
+    log_handler_stream.setLevel(stream_level)
     log_handler_stream.setFormatter(log_formatter_stream)
     log_logger = logging.getLogger(Path(sys.argv[0]).name)
     log_logger.addHandler(log_handler_stream)
     if tofile:
-        if dsuffix is not None: dsuffix = dsuffix.strip()
-        if dsuffix is not None and len(dsuffix) > 0:
-            log_handler_file = logging.FileHandler(Path(sys.argv[0]).
-                                                   with_name(Path(sys.argv[0]).stem + "_" + dsuffix).
-                                                   with_suffix(".log").as_posix(), mode="w")
-        else:
-            log_handler_file = logging.FileHandler(Path(sys.argv[0]).with_suffix(".log").as_posix(), mode="w")
+        if file_path is None:
+            if dsuffix is not None: dsuffix = dsuffix.strip()
+            if dsuffix is not None and len(dsuffix) > 0:
+                file_path = Path(sys.argv[0])\
+                    .with_name(Path(sys.argv[0]).stem + "_" + dsuffix)\
+                    .with_suffix(".log")\
+                    .as_posix()
+            else:
+                file_path = Path(sys.argv[0]).with_suffix(".log").as_posix()
+        log_handler_file = logging.FileHandler(file_path, mode="a")
         log_handler_file.setLevel(logging.DEBUG)
         log_handler_file.setFormatter(log_formatter_file)
         log_logger.addHandler(log_handler_file)
